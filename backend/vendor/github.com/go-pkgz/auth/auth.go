@@ -1,3 +1,4 @@
+// Package auth provides "social login" with Github, Google, Facebook, Microsoft, Yandex and Battle.net as well as custom auth providers.
 package auth
 
 import (
@@ -16,6 +17,12 @@ import (
 	"github.com/go-pkgz/auth/token"
 )
 
+// Client is a type of auth client
+type Client struct {
+	Cid     string
+	Csecret string
+}
+
 // Service provides higher level wrapper allowing to construct everything and get back token middleware
 type Service struct {
 	logger         logger.L
@@ -25,6 +32,7 @@ type Service struct {
 	authMiddleware middleware.Authenticator
 	avatarProxy    *avatar.Proxy
 	issuer         string
+	useGravatar    bool
 }
 
 // Opts is a full set of all parameters to initialize Service
@@ -43,20 +51,23 @@ type Opts struct {
 	JWTHeaderKey   string // default "X-JWT"
 	XSRFCookieName string // default "XSRF-TOKEN"
 	XSRFHeaderKey  string // default "X-XSRF-TOKEN"
+	JWTQuery       string // default "token"
 
 	Issuer string // optional value for iss claim, usually the application name, default "go-pkgz/auth"
 
 	URL       string          // root url for the rest service, i.e. http://blah.example.com, required
 	Validator token.Validator // validator allows to reject some valid tokens with user-defined logic
 
-	AvatarStore       avatar.Store // store to save/load avatars, required
+	AvatarStore       avatar.Store // store to save/load avatars, required (use avatar.NoOp to disable avatars support)
 	AvatarResizeLimit int          // resize avatar's limit in pixels
 	AvatarRoutePath   string       // avatar routing prefix, i.e. "/api/v1/avatar", default `/avatar`
+	UseGravatar       bool         // for email based auth (verified provider) use gravatar service
 
-	AdminPasswd    string         // if presented, allows basic auth with user admin and given password
-	AudienceReader token.Audience // list of allowed aud values, default (empty) allows any
-	RefreshFactor  int            // estimated number of request client sends in parallel during token refresh.
-	Logger         logger.L       // logger interface, default is no logging at all
+	AdminPasswd    string                  // if presented, allows basic auth with user admin and given password
+	AudienceReader token.Audience          // list of allowed aud values, default (empty) allows any
+	AudSecrets     bool                    // allow multiple secrets (secret per aud)
+	Logger         logger.L                // logger interface, default is no logging at all
+	RefreshCache   middleware.RefreshCache // optional cache to keep refreshed tokens
 }
 
 // NewService initializes everything
@@ -66,11 +77,12 @@ func NewService(opts Opts) (res *Service) {
 		opts:   opts,
 		logger: opts.Logger,
 		authMiddleware: middleware.Authenticator{
-			Validator:     opts.Validator,
-			AdminPasswd:   opts.AdminPasswd,
-			RefreshFactor: opts.RefreshFactor,
+			Validator:    opts.Validator,
+			AdminPasswd:  opts.AdminPasswd,
+			RefreshCache: opts.RefreshCache,
 		},
-		issuer: opts.Issuer,
+		issuer:      opts.Issuer,
+		useGravatar: opts.UseGravatar,
 	}
 
 	if opts.Issuer == "" {
@@ -78,7 +90,7 @@ func NewService(opts Opts) (res *Service) {
 	}
 
 	if opts.Logger == nil {
-		res.logger = logger.Func(func(fmt string, args ...interface{}) {}) // do-nothing logger
+		res.logger = logger.NoOp
 	}
 
 	jwtService := token.NewService(token.Opts{
@@ -93,12 +105,14 @@ func NewService(opts Opts) (res *Service) {
 		JWTHeaderKey:   opts.JWTHeaderKey,
 		XSRFCookieName: opts.XSRFCookieName,
 		XSRFHeaderKey:  opts.XSRFHeaderKey,
+		JWTQuery:       opts.JWTQuery,
 		Issuer:         res.issuer,
 		AudienceReader: opts.AudienceReader,
+		AudSecrets:     opts.AudSecrets,
 	})
 
 	if opts.SecretReader == nil {
-		jwtService.SecretReader = token.SecretFunc(func() (string, error) {
+		jwtService.SecretReader = token.SecretFunc(func(string) (string, error) {
 			return "", errors.New("secrets reader not available")
 		})
 		res.logger.Logf("[WARN] no secret reader defined")
@@ -125,7 +139,7 @@ func NewService(opts Opts) (res *Service) {
 }
 
 // Handlers gets http.Handler for all providers and avatars
-func (s *Service) Handlers() (authHandler http.Handler, avatarHandler http.Handler) {
+func (s *Service) Handlers() (authHandler, avatarHandler http.Handler) {
 
 	ah := func(w http.ResponseWriter, r *http.Request) {
 		elems := strings.Split(r.URL.Path, "/")
@@ -146,6 +160,11 @@ func (s *Service) Handlers() (authHandler http.Handler, avatarHandler http.Handl
 
 		// allow logout without specifying provider
 		if elems[len(elems)-1] == "logout" {
+			if len(s.providers) == 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				rest.RenderJSON(w, r, rest.JSON{"error": "provides not defined"})
+				return
+			}
 			s.providers[0].Handler(w, r)
 			return
 		}
@@ -182,7 +201,7 @@ func (s *Service) Middleware() middleware.Authenticator {
 }
 
 // AddProvider adds provider for given name
-func (s *Service) AddProvider(name string, cid string, csecret string) {
+func (s *Service) AddProvider(name, cid, csecret string) {
 
 	p := provider.Params{
 		URL:         s.opts.URL,
@@ -202,13 +221,35 @@ func (s *Service) AddProvider(name string, cid string, csecret string) {
 	case "facebook":
 		s.providers = append(s.providers, provider.NewService(provider.NewFacebook(p)))
 	case "yandex":
-		s.providers = append(s.providers, provider.NewService(provider.NewFacebook(p)))
+		s.providers = append(s.providers, provider.NewService(provider.NewYandex(p)))
+	case "battlenet":
+		s.providers = append(s.providers, provider.NewService(provider.NewBattlenet(p)))
+	case "microsoft":
+		s.providers = append(s.providers, provider.NewService(provider.NewMicrosoft(p)))
+	case "twitter":
+		s.providers = append(s.providers, provider.NewService(provider.NewTwitter(p)))
 	case "dev":
 		s.providers = append(s.providers, provider.NewService(provider.NewDev(p)))
 	default:
 		return
 	}
 
+	s.authMiddleware.Providers = s.providers
+}
+
+// AddCustomProvider adds custom provider (e.g. https://gopkg.in/oauth2.v3)
+func (s *Service) AddCustomProvider(name string, client Client, copts provider.CustomHandlerOpt) {
+	p := provider.Params{
+		URL:         s.opts.URL,
+		JwtService:  s.jwtService,
+		Issuer:      s.issuer,
+		AvatarSaver: s.avatarProxy,
+		Cid:         client.Cid,
+		Csecret:     client.Csecret,
+		L:           s.logger,
+	}
+
+	s.providers = append(s.providers, provider.NewService(provider.NewCustom(name, p, copts)))
 	s.authMiddleware.Providers = s.providers
 }
 
@@ -221,6 +262,23 @@ func (s *Service) AddDirectProvider(name string, credChecker provider.CredChecke
 		Issuer:       s.issuer,
 		TokenService: s.jwtService,
 		CredChecker:  credChecker,
+		AvatarSaver:  s.avatarProxy,
+	}
+	s.providers = append(s.providers, provider.NewService(dh))
+	s.authMiddleware.Providers = s.providers
+}
+
+// AddVerifProvider adds provider user's verification sent by sender
+func (s *Service) AddVerifProvider(name, msgTmpl string, sender provider.Sender) {
+	dh := provider.VerifyHandler{
+		L:            s.logger,
+		ProviderName: name,
+		Issuer:       s.issuer,
+		TokenService: s.jwtService,
+		AvatarSaver:  s.avatarProxy,
+		Sender:       sender,
+		Template:     msgTmpl,
+		UseGravatar:  s.useGravatar,
 	}
 	s.providers = append(s.providers, provider.NewService(dh))
 	s.authMiddleware.Providers = s.providers

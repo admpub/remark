@@ -20,12 +20,15 @@ const adminAttr = "admin" // predefined attribute key for bool isAdmin status
 
 // User is the basic part of oauth data provided by service
 type User struct {
-	Name    string `json:"name"`
-	ID      string `json:"id"`
-	Picture string `json:"picture"`
-	IP      string `json:"ip,omitempty"`
-	Email   string `json:"email,omitempty"`
+	// set by service
+	Name     string `json:"name"`
+	ID       string `json:"id"`
+	Picture  string `json:"picture"`
+	Audience string `json:"aud,omitempty"`
 
+	// set by client
+	IP         string                 `json:"ip,omitempty"`
+	Email      string                 `json:"email,omitempty"`
 	Attributes map[string]interface{} `json:"attrs,omitempty"`
 }
 
@@ -38,7 +41,7 @@ func (u *User) SetBoolAttr(key string, val bool) {
 }
 
 // SetStrAttr sets string attribute
-func (u *User) SetStrAttr(key string, val string) {
+func (u *User) SetStrAttr(key, val string) {
 	if u.Attributes == nil {
 		u.Attributes = map[string]interface{}{}
 	}
@@ -73,6 +76,23 @@ func (u *User) IsAdmin() bool {
 	return u.BoolAttr(adminAttr)
 }
 
+// SliceAttr gets slice attribute
+func (u *User) SliceAttr(key string) []string {
+	r, ok := u.Attributes[key].([]string)
+	if !ok {
+		return []string{}
+	}
+	return r
+}
+
+// SetSliceAttr sets slice attribute for given key
+func (u *User) SetSliceAttr(key string, val []string) {
+	if u.Attributes == nil {
+		u.Attributes = map[string]interface{}{}
+	}
+	u.Attributes[key] = val
+}
+
 // HashID tries to hash val with hash.Hash and fallback to crc if needed
 func HashID(h hash.Hash, val string) string {
 
@@ -95,7 +115,7 @@ func HashID(h hash.Hash, val string) string {
 
 type contextKey string
 
-// MustGetUserInfo fails if can't extract user data from the request.
+// MustGetUserInfo gets user info and panics if can't extract it from the request.
 // should be called from authenticated controllers only
 func MustGetUserInfo(r *http.Request) User {
 	user, err := GetUserInfo(r)
@@ -105,7 +125,7 @@ func MustGetUserInfo(r *http.Request) User {
 	return user
 }
 
-// GetUserInfo returns user from request context
+// GetUserInfo returns user info from request context
 func GetUserInfo(r *http.Request) (user User, err error) {
 
 	ctx := r.Context()

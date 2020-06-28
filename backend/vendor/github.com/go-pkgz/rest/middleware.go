@@ -1,11 +1,12 @@
 package rest
 
 import (
-	"log"
 	"net/http"
 	"os"
 	"runtime/debug"
 	"strings"
+
+	"github.com/go-pkgz/rest/logger"
 )
 
 // AppInfo adds custom app-info to the response header
@@ -32,9 +33,7 @@ func Ping(next http.Handler) http.Handler {
 		if r.Method == "GET" && strings.HasSuffix(strings.ToLower(r.URL.Path), "/ping") {
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte("pong")); err != nil {
-				log.Printf("[WARN] can't send pong, %s", err)
-			}
+			w.Write([]byte("pong")) //nolint
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -43,16 +42,18 @@ func Ping(next http.Handler) http.Handler {
 }
 
 // Recoverer is a middleware that recovers from panics, logs the panic and returns a HTTP 500 status if possible.
-func Recoverer(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rvr := recover(); rvr != nil {
-				log.Printf("[WARN] request panic, %v", rvr)
-				log.Print(string(debug.Stack()))
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			}
-		}()
-		next.ServeHTTP(w, r)
+func Recoverer(l logger.Backend) func(http.Handler) http.Handler {
+	return func(h http.Handler) http.Handler {
+		fn := func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rvr := recover(); rvr != nil {
+					l.Logf("request panic, %v", rvr)
+					l.Logf(string(debug.Stack()))
+					http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				}
+			}()
+			h.ServeHTTP(w, r)
+		}
+		return http.HandlerFunc(fn)
 	}
-	return http.HandlerFunc(fn)
 }

@@ -1,3 +1,4 @@
+// Package rest provides common middlewares and helpers for rest services
 package rest
 
 import (
@@ -48,7 +49,7 @@ func RenderJSONWithHTML(w http.ResponseWriter, r *http.Request, v interface{}) e
 
 	data, err := encodeJSONWithHTML(v)
 	if err != nil {
-		return errors.Wrap(err, "json encoding failed")
+		return err
 	}
 	return RenderJSONFromBytes(w, r, data)
 }

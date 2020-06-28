@@ -2,20 +2,25 @@ package service
 
 import (
 	"io"
-	"log"
 	"net/http"
+	"strings"
+	"time"
 
-	"github.com/go-pkgz/rest/cache"
+	"github.com/go-pkgz/lcw"
+	log "github.com/go-pkgz/lgr"
 	"github.com/pkg/errors"
 	"golang.org/x/net/html"
 )
 
-const teMaxCachedRecs = 1000
+const (
+	teCacheMaxRecs = 1000
+	teCacheTTL     = 15 * time.Minute
+)
 
 // TitleExtractor gets html title from remote page, cached
 type TitleExtractor struct {
 	client http.Client
-	cache  cache.LoadingCache
+	cache  lcw.LoadingCache
 }
 
 // NewTitleExtractor makes extractor with cache. If memory cache failed, switching to no-cache
@@ -24,23 +29,27 @@ func NewTitleExtractor(client http.Client) *TitleExtractor {
 		client: client,
 	}
 	var err error
-	res.cache, err = cache.NewMemoryCache(cache.MaxKeys(teMaxCachedRecs))
+	res.cache, err = lcw.NewExpirableCache(lcw.TTL(teCacheTTL), lcw.MaxKeySize(teCacheMaxRecs))
 	if err != nil {
-		log.Printf("[WARN] failed to make cache, %v", err)
-		res.cache = &cache.Nop{}
+		log.Printf("[WARN] failed to make cache, caching disabled for titles, %v", err)
+		res.cache = &lcw.Nop{}
 	}
 	return &res
 }
 
 // Get page for url and return title
 func (t *TitleExtractor) Get(url string) (string, error) {
-
-	b, err := t.cache.Get(cache.NewKey("site").ID(url), func() ([]byte, error) {
-		resp, err := t.client.Get(url)
+	client := http.Client{Timeout: t.client.Timeout, Transport: t.client.Transport}
+	b, err := t.cache.Get(url, func() (lcw.Value, error) {
+		resp, err := client.Get(url)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to load page %s", url)
 		}
-		defer resp.Body.Close() //nolint
+		defer func() {
+			if err = resp.Body.Close(); err != nil {
+				log.Printf("[WARN] failed to close title extractor body, %v", err)
+			}
+		}()
 		if resp.StatusCode != 200 {
 			return nil, errors.Errorf("can't load page %s, code %d", url, resp.StatusCode)
 		}
@@ -49,14 +58,21 @@ func (t *TitleExtractor) Get(url string) (string, error) {
 		if !ok {
 			return nil, errors.Errorf("can't get title for %s", url)
 		}
-		return []byte(title), nil
+		return title, nil
 	})
 
+	// on error save result (empty string) to cache too and return "" title
 	if err != nil {
+		_, _ = t.cache.Get(url, func() (lcw.Value, error) { return "", nil })
 		return "", err
 	}
 
-	return string(b), nil
+	return b.(string), nil
+}
+
+// Close title extractor
+func (t *TitleExtractor) Close() error {
+	return t.cache.Close()
 }
 
 // get title from body reader, traverse recursively
@@ -75,7 +91,10 @@ func (t *TitleExtractor) isTitleElement(n *html.Node) bool {
 
 func (t *TitleExtractor) traverse(n *html.Node) (string, bool) {
 	if t.isTitleElement(n) {
-		return n.FirstChild.Data, true
+		title := n.FirstChild.Data
+		title = strings.Replace(title, "\n", "", -1)
+		title = strings.TrimSpace(title)
+		return title, true
 	}
 
 	for c := n.FirstChild; c != nil; c = c.NextSibling {

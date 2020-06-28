@@ -2,16 +2,15 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
 
-	"github.com/hashicorp/logutils"
-	flags "github.com/jessevdk/go-flags"
+	log "github.com/go-pkgz/lgr"
+	"github.com/umputun/go-flags"
 
-	"github.com/umputun/remark/backend/app/cmd"
+	"github.com/umputun/remark42/backend/app/cmd"
 )
 
 // Opts with all cli commands and flags
@@ -22,6 +21,7 @@ type Opts struct {
 	RestoreCmd cmd.RestoreCommand `command:"restore"`
 	AvatarCmd  cmd.AvatarCommand  `command:"avatar"`
 	CleanupCmd cmd.CleanupCommand `command:"cleanup"`
+	RemapCmd   cmd.RemapCommand   `command:"remap"`
 
 	RemarkURL    string `long:"url" env:"REMARK_URL" required:"true" description:"url to remark"`
 	SharedSecret string `long:"secret" env:"SECRET" required:"true" description:"shared secret key"`
@@ -45,6 +45,10 @@ func main() {
 			SharedSecret: opts.SharedSecret,
 			Revision:     revision,
 		})
+		for _, entry := range c.HandleDeprecatedFlags() {
+			log.Printf("[WARN] --%s is deprecated and will be removed in v%s, please use --%s instead",
+				entry.Old, entry.RemoveVersion, entry.New)
+		}
 		err := c.Execute(args)
 		if err != nil {
 			log.Printf("[ERROR] failed with %+v", err)
@@ -62,19 +66,11 @@ func main() {
 }
 
 func setupLog(dbg bool) {
-	filter := &logutils.LevelFilter{
-		Levels:   []logutils.LogLevel{"DEBUG", "INFO", "WARN", "ERROR"},
-		MinLevel: logutils.LogLevel("INFO"),
-		Writer:   os.Stdout,
-	}
-
-	log.SetFlags(log.Ldate | log.Ltime)
-
 	if dbg {
-		log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
-		filter.MinLevel = logutils.LogLevel("DEBUG")
+		log.Setup(log.Debug, log.CallerFile, log.CallerFunc, log.Msec, log.LevelBraces)
+		return
 	}
-	log.SetOutput(filter)
+	log.Setup(log.Msec, log.LevelBraces)
 }
 
 // getDump reads runtime stack and returns as a string
@@ -88,6 +84,7 @@ func getDump() string {
 	return string(stacktrace[:length])
 }
 
+// nolint:gochecknoinits // can't avoid it in this place
 func init() {
 	// catch SIGQUIT and print stack traces
 	sigChan := make(chan os.Signal)

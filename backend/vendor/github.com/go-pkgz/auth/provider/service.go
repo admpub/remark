@@ -12,6 +12,12 @@ import (
 	"github.com/go-pkgz/auth/token"
 )
 
+const (
+	urlLoginSuffix    = "/login"
+	urlCallbackSuffix = "/callback"
+	urlLogoutSuffix   = "/logout"
+)
+
 // Service represents oauth2 provider. Adds Handler method multiplexing login, auth and logout requests
 type Service struct {
 	Provider
@@ -24,13 +30,13 @@ func NewService(p Provider) Service {
 
 // AvatarSaver defines minimal interface to save avatar
 type AvatarSaver interface {
-	Put(u token.User) (avatarURL string, err error)
+	Put(u token.User, client *http.Client) (avatarURL string, err error)
 }
 
 // TokenService defines interface accessing tokens
 type TokenService interface {
 	Parse(tokenString string) (claims token.Claims, err error)
-	Set(w http.ResponseWriter, claims token.Claims) error
+	Set(w http.ResponseWriter, claims token.Claims) (token.Claims, error)
 	Get(r *http.Request) (claims token.Claims, token string, err error)
 	Reset(w http.ResponseWriter)
 }
@@ -50,15 +56,15 @@ func (p Service) Handler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if strings.HasSuffix(r.URL.Path, "/login") {
+	if strings.HasSuffix(r.URL.Path, urlLoginSuffix) {
 		p.LoginHandler(w, r)
 		return
 	}
-	if strings.HasSuffix(r.URL.Path, "/callback") {
+	if strings.HasSuffix(r.URL.Path, urlCallbackSuffix) {
 		p.AuthHandler(w, r)
 		return
 	}
-	if strings.HasSuffix(r.URL.Path, "/logout") {
+	if strings.HasSuffix(r.URL.Path, urlLogoutSuffix) {
 		p.LogoutHandler(w, r)
 		return
 	}
@@ -66,9 +72,9 @@ func (p Service) Handler(w http.ResponseWriter, r *http.Request) {
 }
 
 // setAvatar saves avatar and puts proxied URL to u.Picture
-func setAvatar(ava AvatarSaver, u token.User) (token.User, error) {
+func setAvatar(ava AvatarSaver, u token.User, client *http.Client) (token.User, error) {
 	if ava != nil {
-		avatarURL, e := ava.Put(u)
+		avatarURL, e := ava.Put(u, client)
 		if e != nil {
 			return u, errors.Wrap(e, "failed to save avatar for")
 		}

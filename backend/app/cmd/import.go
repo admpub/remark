@@ -6,19 +6,19 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	log "github.com/go-pkgz/lgr"
 	"github.com/pkg/errors"
 )
 
 // ImportCommand set of flags and command for import
 type ImportCommand struct {
 	InputFile   string        `short:"f" long:"file" description:"input file name" required:"true"`
-	Provider    string        `short:"p" long:"provider" default:"disqus" choice:"disqus" choice:"wordpress" description:"import format"`
+	Provider    string        `short:"p" long:"provider" default:"disqus" choice:"disqus" choice:"wordpress" description:"import format"` //nolint
 	Site        string        `short:"s" long:"site" env:"SITE" default:"remark" description:"site name"`
 	Timeout     time.Duration `long:"timeout" default:"15m" description:"import timeout"`
 	AdminPasswd string        `long:"admin-passwd" env:"ADMIN_PASSWD" required:"true" description:"admin basic auth password"`
@@ -26,7 +26,7 @@ type ImportCommand struct {
 }
 
 // Execute runs import with ImportCommand parameters, entry point for "import" command
-func (ic *ImportCommand) Execute(args []string) error {
+func (ic *ImportCommand) Execute(_ []string) error {
 	log.Printf("[INFO] import %s (%s), site %s", ic.InputFile, ic.Provider, ic.Site)
 	resetEnv("SECRET", "ADMIN_PASSWD")
 
@@ -69,7 +69,7 @@ func (ic *ImportCommand) Execute(args []string) error {
 
 // reader returns reader for file. For .gz file wraps with gunzip
 func (ic *ImportCommand) reader(inp string) (reader io.Reader, err error) {
-	inpFile, err := os.Open(inp)
+	inpFile, err := os.Open(inp) // nolint
 	if err != nil {
 		return nil, errors.Wrapf(err, "import failed, can't open %s", inp)
 	}

@@ -84,13 +84,13 @@ func (x *Context) URLParam(key string) string {
 //
 // For example,
 //
-// func Instrument(next http.Handler) http.Handler {
-//   return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-//     next.ServeHTTP(w, r)
-//     routePattern := chi.RouteContext(r.Context()).RoutePattern()
-//     measure(w, r, routePattern)
-// 	 })
-// }
+//   func Instrument(next http.Handler) http.Handler {
+//     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+//       next.ServeHTTP(w, r)
+//       routePattern := chi.RouteContext(r.Context()).RoutePattern()
+//       measure(w, r, routePattern)
+//   	 })
+//   }
 func (x *Context) RoutePattern() string {
 	routePattern := strings.Join(x.RoutePatterns, "")
 	return strings.Replace(routePattern, "/*/", "/", -1)
@@ -99,7 +99,8 @@ func (x *Context) RoutePattern() string {
 // RouteContext returns chi's routing Context object from a
 // http.Request Context.
 func RouteContext(ctx context.Context) *Context {
-	return ctx.Value(RouteCtxKey).(*Context)
+	val, _ := ctx.Value(RouteCtxKey).(*Context)
+	return val
 }
 
 // URLParam returns the url parameter from a http.Request object.
@@ -125,8 +126,8 @@ type RouteParams struct {
 
 // Add will append a URL parameter to the end of the route param
 func (s *RouteParams) Add(key, value string) {
-	(*s).Keys = append((*s).Keys, key)
-	(*s).Values = append((*s).Values, value)
+	s.Keys = append(s.Keys, key)
+	s.Values = append(s.Values, value)
 }
 
 // ServerBaseContext wraps an http.Handler to set the request context to the

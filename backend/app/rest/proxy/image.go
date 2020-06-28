@@ -1,106 +1,58 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"io"
-	"log"
+	"io/ioutil"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/go-chi/chi"
+	log "github.com/go-pkgz/lgr"
+	"github.com/go-pkgz/repeater"
 	"github.com/pkg/errors"
 
-	"github.com/go-pkgz/repeater"
-
-	"github.com/umputun/remark/backend/app/rest"
+	"github.com/umputun/remark42/backend/app/rest"
+	"github.com/umputun/remark42/backend/app/store/image"
 )
 
 // Image extracts image src from comment's html and provides proxy for them
 // this is needed to keep remark42 running behind of HTTPS serve all images via https
 type Image struct {
-	RemarkURL string
-	RoutePath string
-	Enabled   bool
+	RemarkURL     string
+	RoutePath     string
+	HTTP2HTTPS    bool
+	CacheExternal bool
+	Timeout       time.Duration
+	ImageService  *image.Service
 }
 
-// Convert all img src links without https to proxied links
+// Convert img src links to proxied links depends on enabled options
 func (p Image) Convert(commentHTML string) string {
-	if !p.Enabled || strings.HasPrefix(p.RemarkURL, "http://") {
-		return commentHTML
+	if p.CacheExternal {
+		imgs, err := p.extract(commentHTML, func(img string) bool { return !strings.HasPrefix(img, p.RemarkURL) })
+		if err != nil {
+			return commentHTML
+		}
+		commentHTML = p.replace(commentHTML, imgs)
 	}
 
-	imgs, err := p.extract(commentHTML)
-	if err != nil {
-		return commentHTML
+	if p.HTTP2HTTPS && !strings.HasPrefix(p.RemarkURL, "http://") {
+		imgs, err := p.extract(commentHTML, func(img string) bool { return strings.HasPrefix(img, "http://") })
+		if err != nil {
+			return commentHTML
+		}
+		commentHTML = p.replace(commentHTML, imgs)
 	}
 
-	return p.replace(commentHTML, imgs)
+	return commentHTML
 }
 
-// Routes returns router group to respond to proxied request
-func (p Image) Routes() chi.Router {
-	router := chi.NewRouter()
-	if !p.Enabled {
-		return router
-	}
-	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		src, err := base64.URLEncoding.DecodeString(r.URL.Query().Get("src"))
-		if err != nil {
-			rest.SendErrorJSON(w, r, http.StatusBadRequest, err, "can't decode image url")
-			return
-		}
-
-		client := http.Client{Timeout: 30 * time.Second}
-		var resp *http.Response
-		err = repeater.NewDefault(5, time.Second).Do(func() error {
-			var e error
-			resp, e = client.Get(string(src))
-			return e
-		})
-		if err != nil {
-			rest.SendErrorJSON(w, r, http.StatusBadRequest, err, "can't get image "+string(src))
-			return
-		}
-		defer func() {
-			if e := resp.Body.Close(); e != nil {
-				log.Printf("[WARN] can't close body, %s", e)
-			}
-		}()
-
-		if resp.StatusCode != http.StatusOK {
-			w.WriteHeader(resp.StatusCode)
-			return
-		}
-
-		for k, v := range resp.Header {
-			if strings.EqualFold(k, "Content-Type") {
-				w.Header().Set(k, v[0])
-			}
-			if strings.EqualFold(k, "Content-Length") {
-				w.Header().Set(k, v[0])
-			}
-		}
-		// enforce client-side caching
-		etag := `"` + r.URL.Query().Get("src") + `"`
-		w.Header().Set("Etag", etag)
-		w.Header().Set("Cache-Control", "max-age=2592000") // 30 days
-		if match := r.Header.Get("If-None-Match"); match != "" {
-			if strings.Contains(match, etag) {
-				w.WriteHeader(http.StatusNotModified)
-				return
-			}
-		}
-		if _, e := io.Copy(w, resp.Body); e != nil {
-			log.Printf("[WARN] can't copy image stream, %s", e)
-		}
-	})
-	return router
-}
-
-// extract gets all non-https images and return list of src
-func (p Image) extract(commentHTML string) ([]string, error) {
+// extract gets all images matching predicate and return list of src
+func (p Image) extract(commentHTML string, imgSrcPred func(string) bool) ([]string, error) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(commentHTML))
 	if err != nil {
 		return nil, errors.Wrap(err, "can't create document")
@@ -108,7 +60,7 @@ func (p Image) extract(commentHTML string) ([]string, error) {
 	result := []string{}
 	doc.Find("img").Each(func(i int, s *goquery.Selection) {
 		if im, ok := s.Attr("src"); ok {
-			if strings.HasPrefix(im, "http://") {
+			if imgSrcPred(im) {
 				result = append(result, im)
 			}
 		}
@@ -118,7 +70,6 @@ func (p Image) extract(commentHTML string) ([]string, error) {
 
 // replace img links in commentHTML with route to proxy, base64 encoded original link
 func (p Image) replace(commentHTML string, imgs []string) string {
-
 	for _, img := range imgs {
 		encodedImgURL := base64.URLEncoding.EncodeToString([]byte(img))
 		resImgURL := p.RemarkURL + p.RoutePath + "?src=" + encodedImgURL
@@ -126,4 +77,96 @@ func (p Image) replace(commentHTML string, imgs []string) string {
 	}
 
 	return commentHTML
+}
+
+// Handler returns http handler respond to proxied request
+func (p Image) Handler(w http.ResponseWriter, r *http.Request) {
+	src, err := base64.URLEncoding.DecodeString(r.URL.Query().Get("src"))
+	if err != nil {
+		rest.SendErrorJSON(w, r, http.StatusBadRequest, err, "can't decode image url", rest.ErrDecode)
+		return
+	}
+
+	imgURL := string(src)
+	var img []byte
+	imgID, err := image.CachedImgID(imgURL)
+	if err != nil {
+		rest.SendErrorJSON(w, r, http.StatusBadRequest, err, "can't parse image url "+imgURL, rest.ErrAssetNotFound)
+		return
+	}
+	// try to load from cache for case it was saved when CacheExternal was enabled
+	img, _ = p.ImageService.Load(imgID)
+	if img == nil {
+		img, err = p.downloadImage(context.Background(), imgURL)
+		if err != nil {
+			rest.SendErrorJSON(w, r, http.StatusNotFound, err, "can't get image "+imgURL, rest.ErrAssetNotFound)
+			return
+		}
+		if p.CacheExternal {
+			p.cacheImage(bytes.NewReader(img), imgID)
+		}
+	}
+
+	// enforce client-side caching
+	etag := `"` + r.URL.Query().Get("src") + `"`
+	w.Header().Set("Etag", etag)
+	w.Header().Set("Cache-Control", "max-age=2592000") // 30 days
+	if match := r.Header.Get("If-None-Match"); match != "" {
+		if strings.Contains(match, etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+
+	w.Header().Add("Content-Type", p.ImageService.ImgContentType(img))
+	_, err = io.Copy(w, bytes.NewReader(img))
+	if err != nil {
+		log.Printf("[WARN] can't copy image stream, %s", err)
+	}
+}
+
+// cache image from provided Reader using given ID
+func (p Image) cacheImage(r io.Reader, imgID string) {
+	err := p.ImageService.SaveWithID(imgID, r)
+	if err != nil {
+		log.Printf("[WARN] unable to save image to the storage: %+v", err)
+	}
+}
+
+// download an image.
+func (p Image) downloadImage(ctx context.Context, imgURL string) ([]byte, error) {
+	log.Printf("[DEBUG] downloading image %s", imgURL)
+
+	timeout := 60 * time.Second // default
+	if p.Timeout > 0 {
+		timeout = p.Timeout
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	client := http.Client{Timeout: 30 * time.Second}
+	var resp *http.Response
+	err := repeater.NewDefault(5, time.Second).Do(ctx, func() error {
+		var e error
+		req, e := http.NewRequest("GET", imgURL, nil)
+		if e != nil {
+			return errors.Wrapf(e, "failed to make request for %s", imgURL)
+		}
+		resp, e = client.Do(req.WithContext(ctx))
+		return e
+	})
+	if err != nil {
+		return nil, errors.Wrapf(err, "can't download image %s", imgURL)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.Errorf("got unsuccessful response status %d while fetching %s", resp.StatusCode, imgURL)
+	}
+
+	imgData, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, errors.Errorf("unable to read image body")
+	}
+	return imgData, nil
 }

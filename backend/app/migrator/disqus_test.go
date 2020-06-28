@@ -6,29 +6,30 @@ import (
 	"testing"
 	"time"
 
-	bolt "github.com/coreos/bbolt"
-	"github.com/stretchr/testify/require"
-	"github.com/umputun/remark/backend/app/store"
-	"github.com/umputun/remark/backend/app/store/admin"
-	"github.com/umputun/remark/backend/app/store/engine"
-	"github.com/umputun/remark/backend/app/store/service"
-
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	bolt "go.etcd.io/bbolt"
+
+	"github.com/umputun/remark42/backend/app/store"
+	"github.com/umputun/remark42/backend/app/store/admin"
+	"github.com/umputun/remark42/backend/app/store/engine"
+	"github.com/umputun/remark42/backend/app/store/service"
 )
 
 func TestDisqus_Import(t *testing.T) {
 	defer os.Remove("/tmp/remark-test.db")
 	b, err := engine.NewBoltDB(bolt.Options{}, engine.BoltSite{FileName: "/tmp/remark-test.db", SiteID: "test"})
-	require.Nil(t, err, "create store")
-	dataStore := service.DataStore{Interface: b, AdminStore: admin.NewStaticStore("12345", []string{}, "")}
+	require.NoError(t, err, "create store")
+	dataStore := service.DataStore{Engine: b, AdminStore: admin.NewStaticStore("12345", nil, []string{}, "")}
+	defer dataStore.Close()
 	d := Disqus{DataStore: &dataStore}
 	size, err := d.Import(strings.NewReader(xmlTestDisqus), "test")
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, 4, size)
 
-	last, err := dataStore.Last("test", 10)
-	assert.Nil(t, err)
-	assert.Equal(t, 4, len(last), "4 comments imported")
+	last, err := dataStore.Last("test", 10, time.Time{}, adminUser)
+	assert.NoError(t, err)
+	require.Equal(t, 4, len(last), "4 comments imported")
 
 	c := last[len(last)-1] // last reverses, get first one
 	assert.True(t, strings.HasPrefix(c.Text, "<p>The quick brown fox"))
@@ -40,11 +41,11 @@ func TestDisqus_Import(t *testing.T) {
 	assert.Equal(t, "2ba6b71dbf9750ae3356cce14cac6c1b1962747c", c.User.IP)
 
 	posts, err := dataStore.List("test", 0, 0)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, 2, len(posts), "2 posts")
 
 	count, err := dataStore.Count(store.Locator{SiteID: "test", URL: "https://radio-t.com/p/2011/03/05/podcast-229/"})
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, 2, count)
 }
 
@@ -56,7 +57,7 @@ func TestDisqus_Convert(t *testing.T) {
 	for comment := range ch {
 		res = append(res, comment)
 	}
-	assert.Equal(t, 4, len(res), "4 comments total, 1 spam excluded, 1 bad excluded")
+	require.Equal(t, 4, len(res), "4 comments total, 1 spam excluded, 1 bad excluded")
 
 	exp0 := store.Comment{
 		ID: "299619020",

@@ -1,4 +1,4 @@
-## REST helpers and middleware [![Build Status](https://travis-ci.org/go-pkgz/rest.svg?branch=master)](https://travis-ci.org/go-pkgz/rest) [![Go Report Card](https://goreportcard.com/badge/github.com/go-pkgz/rest)](https://goreportcard.com/report/github.com/go-pkgz/rest) [![Coverage Status](https://coveralls.io/repos/github/go-pkgz/rest/badge.svg?branch=master)](https://coveralls.io/github/go-pkgz/rest?branch=master) [![godoc](https://godoc.org/github.com/go-pkgz/rest?status.svg)](https://godoc.org/github.com/go-pkgz/rest)
+## REST helpers and middleware [![Build Status](https://github.com/go-pkgz/rest/workflows/build/badge.svg)](https://github.com/go-pkgz/rest/actions) [![Go Report Card](https://goreportcard.com/badge/github.com/go-pkgz/rest)](https://goreportcard.com/report/github.com/go-pkgz/rest) [![Coverage Status](https://coveralls.io/repos/github/go-pkgz/rest/badge.svg?branch=master)](https://coveralls.io/github/go-pkgz/rest?branch=master) [![godoc](https://godoc.org/github.com/go-pkgz/rest?status.svg)](https://godoc.org/github.com/go-pkgz/rest)
 
 
 ## Install and update
@@ -38,8 +38,22 @@ pong
 
 ### Logger middleware
 
-Logs all info about request, including user, method, status code, response size, url, elapsed time, request body (optional).
-Can be customized by passing flags - LogNone, LogAll, LogUser and LogBody. Flags can be combined (provided multiple times)
+Logs request, request handling time and response. Log record fields in order of occurrence:
+
+- Request's HTTP method
+- Requested URL (with sanitized query)
+- Remote IP
+- Response's HTTP status code
+- Response body size
+- Request handling time
+- Userinfo associated with the request (optional)
+- Request subject (optional)
+- Request ID (if `X-Request-ID` present)
+- Request body (optional)
+
+_remote IP can be masked with user defined function_
+
+example: `019/03/05 17:26:12.976 [INFO] GET - /api/v1/find?site=remark - 8e228e9cfece - 200 (115) - 4.47784618s`
 
 ### Recoverer middleware
 
@@ -59,6 +73,16 @@ Metrics middleware responds to GET /metrics with list of [expvar](https://golang
 
 BlackWords middleware doesn't allow user-defined words in the request body.
 
+### SizeLimit middleware
+
+SizeLimit middleware checks if body size is above the limit and returns `StatusRequestEntityTooLarge` (413) 
+
+### Trace middleware
+
+It looks for `X-Request-ID` header and makes it as a random id
+ (if not found), then populates it to the result's header
+    and to the request's context.
+    
 ## Helpers
 
 - `rest.JSON` - map alias, just for convenience `type JSON map[string]interface{}`
@@ -66,7 +90,4 @@ BlackWords middleware doesn't allow user-defined words in the request body.
 - `rest.RenderJSONFromBytes` - renders json response from `[]byte`
 - `rest.RenderJSONWithHTML` -  renders json response with html tags and forced `charset=utf-8`
 - `rest.SendErrorJSON` - makes `{error: blah, details: blah}` json body and responds with given error code. Also adds context to logged message
-
-## Caching
-
-Cache wrapper provides loading cache for rest/http responses. See [cache readme](https://github.com/go-pkgz/rest/tree/master/cache) for more details and examples.
+- `rest.NewErrorLogger(l logger.Backend)` creates a struct providing shorter form of logger call

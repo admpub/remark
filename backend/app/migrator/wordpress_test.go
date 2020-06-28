@@ -6,30 +6,32 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/bbolt"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	bolt "go.etcd.io/bbolt"
 
-	"github.com/umputun/remark/backend/app/store"
-	"github.com/umputun/remark/backend/app/store/admin"
-	"github.com/umputun/remark/backend/app/store/engine"
-	"github.com/umputun/remark/backend/app/store/service"
+	"github.com/umputun/remark42/backend/app/store"
+	"github.com/umputun/remark42/backend/app/store/admin"
+	"github.com/umputun/remark42/backend/app/store/engine"
+	"github.com/umputun/remark42/backend/app/store/service"
 )
 
 func TestWordPress_Import(t *testing.T) {
 	siteID := "testWP"
-	defer os.Remove("/tmp/remark-test.db")
+	defer func() { _ = os.Remove("/tmp/remark-test.db") }()
 	b, err := engine.NewBoltDB(bolt.Options{}, engine.BoltSite{FileName: "/tmp/remark-test.db", SiteID: siteID})
-	assert.Nil(t, err, "create store")
+	assert.NoError(t, err, "create store")
 
-	dataStore := service.DataStore{Interface: b, AdminStore: admin.NewStaticStore("12345", []string{}, "")}
+	dataStore := service.DataStore{Engine: b, AdminStore: admin.NewStaticStore("12345", nil, []string{}, "")}
+	defer dataStore.Close()
 	wp := WordPress{DataStore: &dataStore}
 	size, err := wp.Import(strings.NewReader(xmlTestWP), siteID)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, 3, size)
 
-	last, err := dataStore.Last(siteID, 10)
-	assert.Nil(t, err)
-	assert.Equal(t, 3, len(last), "3 comments imported")
+	last, err := dataStore.Last(siteID, 10, time.Time{}, adminUser)
+	assert.NoError(t, err)
+	require.Equal(t, 3, len(last), "3 comments imported")
 
 	c := last[0]
 	assert.Equal(t, "14", c.ID)
@@ -42,14 +44,14 @@ func TestWordPress_Import(t *testing.T) {
 	assert.Equal(t, c.Text, "<p>Mekkatorque was over in that tent up to the right</p>\n")
 
 	posts, err := dataStore.List(siteID, 0, 0)
-	assert.Nil(t, err)
-	assert.Equal(t, 1, len(posts))
+	assert.NoError(t, err)
+	require.Equal(t, 1, len(posts))
 
 	p := posts[0]
 	assert.Equal(t, "https://realmenweardress.es/2010/07/do-you-rp/", p.URL)
 
 	count, err := dataStore.Count(store.Locator{URL: "https://realmenweardress.es/2010/07/do-you-rp/", SiteID: siteID})
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, 3, count)
 }
 
@@ -61,7 +63,7 @@ func TestWordPress_Convert(t *testing.T) {
 	for c := range ch {
 		comments = append(comments, c)
 	}
-	assert.Equal(t, 3, len(comments), "3 comments exported, 1 excluded")
+	require.Equal(t, 3, len(comments), "3 comments exported, 1 excluded")
 
 	exp1 := store.Comment{
 		ID: "13",
@@ -88,7 +90,7 @@ func TestWP_Convert_MD(t *testing.T) {
 	for c := range ch {
 		comments = append(comments, c)
 	}
-	assert.Equal(t, 3, len(comments), "3 comments exported")
+	require.Equal(t, 3, len(comments), "3 comments exported")
 
 	assert.Equal(t, "<p>Row1<br/>\nRow2</p>\n\n<p>Row4</p>\n", comments[0].Text)
 
@@ -188,7 +190,7 @@ var xmlTestWP = `
 		<category domain="post_tag" nicename="alts"><![CDATA[alts]]></category>
 		<category domain="post_tag" nicename="role-playing"><![CDATA[role playing]]></category>
 		<category domain="category" nicename="stuff"><![CDATA[Stuff]]></category>
-		<category domain="post_tag" nicename="wierd-in-a-cant-quite-help-myself-way"><![CDATA[wierd in a can't quite help myself way]]></category>
+		<category domain="post_tag" nicename="weird-in-a-cant-quite-help-myself-way"><![CDATA[weird in a can't quite help myself way]]></category>
 		<wp:postmeta>
 			<wp:meta_key><![CDATA[_edit_last]]></wp:meta_key>
 			<wp:meta_value><![CDATA[2]]></wp:meta_value>

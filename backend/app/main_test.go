@@ -1,52 +1,60 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
-	"log"
+	"math/rand"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
-func TestMain(t *testing.T) {
+func Test_Main(t *testing.T) {
 
-	os.Args = []string{"test", "server", "--secret=123456", "--store.bolt.path=/tmp/xyz", "--backup=/tmp",
-		"--avatar.fs.path=/tmp", "--port=18202", "--url=https://demo.remark42.com", "--dbg", "--notify.type=none"}
+	dir, err := ioutil.TempDir(os.TempDir(), "remark42")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
+	port := chooseRandomUnusedPort()
+	os.Args = []string{"test", "server", "--secret=123456", "--store.bolt.path=" + dir, "--backup=/tmp",
+		"--avatar.fs.path=" + dir, "--port=" + strconv.Itoa(port), "--url=https://demo.remark42.com", "--dbg", "--notify.type=none"}
+
+	done := make(chan struct{})
 	go func() {
-		time.Sleep(500 * time.Millisecond)
-		err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
-		require.Nil(t, err)
+		<-done
+		e := syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+		require.NoError(t, e)
 	}()
 
-	wg := sync.WaitGroup{}
-	wg.Add(1)
+	finished := make(chan struct{})
 	go func() {
-		st := time.Now()
 		main()
-		assert.True(t, time.Since(st).Seconds() < 1, "should take about 500msec")
-		wg.Done()
+		close(finished)
 	}()
 
-	time.Sleep(200 * time.Millisecond) // let server start
+	// defer cleanup because require check below can fail
+	defer func() {
+		close(done)
+		<-finished
+	}()
 
-	// send ping
-	resp, err := http.Get("http://localhost:18202/api/v1/ping")
-	require.Nil(t, err)
+	waitForHTTPServerStart(port)
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/api/v1/ping", port))
+	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, 200, resp.StatusCode)
 	body, err := ioutil.ReadAll(resp.Body)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, "pong", string(body))
-
-	wg.Wait()
 }
 
 func TestGetDump(t *testing.T) {
@@ -54,5 +62,32 @@ func TestGetDump(t *testing.T) {
 	assert.True(t, strings.Contains(dump, "goroutine"))
 	assert.True(t, strings.Contains(dump, "[running]"))
 	assert.True(t, strings.Contains(dump, "backend/app/main.go"))
-	log.Print("\n dump:" + dump)
+	t.Logf("\n dump: %s", dump)
+}
+
+func chooseRandomUnusedPort() (port int) {
+	for i := 0; i < 10; i++ {
+		port = 40000 + int(rand.Int31n(10000))
+		if ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port)); err == nil {
+			_ = ln.Close()
+			break
+		}
+	}
+	return port
+}
+
+func waitForHTTPServerStart(port int) {
+	// wait for up to 10 seconds for server to start before returning it
+	client := http.Client{Timeout: time.Second}
+	for i := 0; i < 100; i++ {
+		time.Sleep(time.Millisecond * 100)
+		if resp, err := client.Get(fmt.Sprintf("http://localhost:%d", port)); err == nil {
+			_ = resp.Body.Close()
+			return
+		}
+	}
+}
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m, goleak.IgnoreTopFunction("github.com/umputun/remark42/backend/app.init.0.func1"))
 }

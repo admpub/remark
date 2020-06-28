@@ -2,13 +2,13 @@ package api
 
 import (
 	"crypto/tls"
-	"log"
 	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
+	log "github.com/go-pkgz/lgr"
 	"golang.org/x/crypto/acme/autocert"
 
 	R "github.com/go-pkgz/rest"
@@ -43,7 +43,7 @@ type SSLConfig struct {
 func (s *Rest) httpToHTTPSRouter() chi.Router {
 	log.Printf("[DEBUG] create https-to-http redirect routes")
 	router := chi.NewRouter()
-	router.Use(middleware.RealIP, R.Recoverer)
+	router.Use(middleware.RealIP, R.Recoverer(log.Default()))
 	router.Use(middleware.Throttle(1000), middleware.Timeout(60*time.Second))
 
 	router.Handle("/*", s.redirectHandler())
@@ -57,7 +57,7 @@ func (s *Rest) httpToHTTPSRouter() chi.Router {
 func (s *Rest) httpChallengeRouter(m *autocert.Manager) chi.Router {
 	log.Printf("[DEBUG] create http-challenge routes")
 	router := chi.NewRouter()
-	router.Use(middleware.RealIP, R.Recoverer)
+	router.Use(middleware.RealIP, R.Recoverer(log.Default()))
 	router.Use(middleware.Throttle(1000), middleware.Timeout(60*time.Second))
 
 	router.Handle("/*", m.HTTPHandler(s.redirectHandler()))
@@ -86,7 +86,7 @@ func (s *Rest) makeAutocertManager() *autocert.Manager {
 // makeHTTPSAutoCertServer makes https server with autocert mode (LE support)
 func (s *Rest) makeHTTPSAutocertServer(port int, router http.Handler, m *autocert.Manager) *http.Server {
 	server := s.makeHTTPServer(port, router)
-	cfg := makeTLSConfig()
+	cfg := s.makeTLSConfig()
 	cfg.GetCertificate = m.GetCertificate
 	server.TLSConfig = cfg
 	return server
@@ -95,7 +95,7 @@ func (s *Rest) makeHTTPSAutocertServer(port int, router http.Handler, m *autocer
 // makeHTTPSServer makes https server for static mode
 func (s *Rest) makeHTTPSServer(port int, router http.Handler) *http.Server {
 	server := s.makeHTTPServer(port, router)
-	server.TLSConfig = makeTLSConfig()
+	server.TLSConfig = s.makeTLSConfig()
 	return server
 }
 
@@ -109,7 +109,7 @@ func (s *Rest) getRemarkHost() string {
 	return u.Hostname()
 }
 
-func makeTLSConfig() *tls.Config {
+func (s *Rest) makeTLSConfig() *tls.Config {
 	return &tls.Config{
 		PreferServerCipherSuites: true,
 		CipherSuites: []uint16{
@@ -119,7 +119,7 @@ func makeTLSConfig() *tls.Config {
 			// tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+			// tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
 		},
 		MinVersion: tls.VersionTLS12,
 		CurvePreferences: []tls.CurveID{

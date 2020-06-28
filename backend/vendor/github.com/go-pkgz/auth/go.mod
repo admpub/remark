@@ -1,15 +1,18 @@
 module github.com/go-pkgz/auth
 
+go 1.14
+
 require (
-	cloud.google.com/go v0.34.0 // indirect
-	github.com/coreos/bbolt v1.3.0
+	github.com/dghubble/oauth1 v0.6.0
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible
-	github.com/globalsign/mgo v0.0.0-20181015135952-eeefdecb41b8
-	github.com/go-pkgz/mongo v1.0.0
-	github.com/go-pkgz/rest v1.1.5
+	github.com/go-pkgz/rest v1.5.0
+	github.com/microcosm-cc/bluemonday v1.0.2
 	github.com/nullrocks/identicon v0.0.0-20180626043057-7875f45b0022
-	github.com/pkg/errors v0.8.0
-	golang.org/x/image v0.0.0-20181116024801-cd38e8056d9b
-	golang.org/x/net v0.0.0-20181220203305-927f97764cc3 // indirect
-	golang.org/x/oauth2 v0.0.0-20181203162652-d668ce993890
+	github.com/pkg/errors v0.9.1
+	github.com/stretchr/testify v1.5.1
+	go.etcd.io/bbolt v1.3.4
+	go.mongodb.org/mongo-driver v1.3.2
+	golang.org/x/image v0.0.0-20200119044424-58c23975cae1
+	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
+	gopkg.in/oauth2.v3 v3.12.0
 )

@@ -14,17 +14,29 @@ func (m mockConverter) Convert(text string) string { return text + "!converted" 
 func TestFormatter_FormatText(t *testing.T) {
 	tbl := []struct {
 		in, out string
+		name    string
 	}{
-		{"", "!converted"},
-		{"12345 abc", "<p>12345 abc</p>\n!converted"},
-		{"**xyz** _aaa_", "<p><strong>xyz</strong> <em>aaa</em></p>\n!converted"},
+		{"", "!converted", "empty"},
+		{"12345 abc", "<p>12345 abc</p>\n!converted", "simple"},
+		{"**xyz** _aaa_ - \"sfs\"", "<p><strong>xyz</strong> <em>aaa</em> – «sfs»</p>\n!converted", "format"},
 		{
-			"http://127.0.0.1/some-long-link/12345/678901234567890", "<p><a href=\"http://127.0.0.1/some-long-link/12345/678901234567890\">http://127.0.0.1/some-long-link/12345/6789012...</a></p>\n!converted",
+			"http://127.0.0.1/some-long-link/12345/678901234567890",
+			"<p><a href=\"http://127.0.0.1/some-long-link/12345/678901234567890\">http://127.0.0." +
+				"1/some-long-link/12345/6789012...</a></p>\n!converted", "links",
 		},
+		{"&mdash; not translated #354", "<p>— not translated #354</p>\n!converted", "mdash"},
+		{"smth\n```go\nfunc main(aa string) int {return 0}\n```", `<p>smth</p>
+<pre class="chroma"><span class="kd">func</span> <span class="nf">main</span><span class="p">(</span><span class="nx">aa</span> <span class="kt">string</span><span class="p">)</span> <span class="kt">int</span> <span class="p">{</span><span class="k">return</span> <span class="mi">0</span><span class="p">}</span>
+</pre>!converted`, "code with language"},
+		{"```\ntest_code\n```", `<pre class="chroma">test_code
+</pre>!converted`, "code without language"},
 	}
 	f := NewCommentFormatter(mockConverter{})
-	for n, tt := range tbl {
-		assert.Equal(t, tt.out, f.FormatText(tt.in), "check #%d", n)
+	for _, tt := range tbl {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.out, f.FormatText(tt.in))
+		})
 	}
 }
 

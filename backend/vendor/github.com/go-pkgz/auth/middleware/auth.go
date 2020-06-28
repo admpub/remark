@@ -1,8 +1,11 @@
-// Package middleware provides oauth2 support as well as related middlewares.
+// Package middleware provides login middlewares:
+// - Auth: adds auth from session and populates user info
+// - Trace: populates user info if token presented
+// - AdminOnly: restrict access to admin users only
 package middleware
 
 import (
-	"math/rand"
+	"crypto/subtle"
 	"net/http"
 
 	"github.com/pkg/errors"
@@ -15,22 +18,29 @@ import (
 // Authenticator is top level auth object providing middlewares
 type Authenticator struct {
 	logger.L
-	JWTService    TokenService
-	Providers     []provider.Service
-	Validator     token.Validator
-	AdminPasswd   string
-	RefreshFactor int
+	JWTService   TokenService
+	Providers    []provider.Service
+	Validator    token.Validator
+	AdminPasswd  string
+	RefreshCache RefreshCache
+}
+
+// RefreshCache defines interface storing and retrieving refreshed tokens
+type RefreshCache interface {
+	Get(key interface{}) (value interface{}, ok bool)
+	Set(key, value interface{})
 }
 
 // TokenService defines interface accessing tokens
 type TokenService interface {
 	Parse(tokenString string) (claims token.Claims, err error)
-	Set(w http.ResponseWriter, claims token.Claims) error
+	Set(w http.ResponseWriter, claims token.Claims) (token.Claims, error)
 	Get(r *http.Request) (claims token.Claims, token string, err error)
 	IsExpired(claims token.Claims) bool
 	Reset(w http.ResponseWriter)
 }
 
+// adminUser sets claims for an optional basic auth
 var adminUser = token.User{
 	ID:   "admin",
 	Name: "admin",
@@ -83,7 +93,7 @@ func (a *Authenticator) auth(reqAuth bool) func(http.Handler) http.Handler {
 			}
 
 			if claims.User == nil {
-				onError(h, w, r, errors.New("failed auth, no user info presented in the claim"))
+				onError(h, w, r, errors.New("no user info presented in the claim"))
 				return
 			}
 
@@ -95,13 +105,12 @@ func (a *Authenticator) auth(reqAuth bool) func(http.Handler) http.Handler {
 					return
 				}
 
-				if a.shouldRefresh(claims) {
-					if claims, err = a.refreshExpiredToken(w, claims); err != nil {
+				if a.JWTService.IsExpired(claims) {
+					if claims, err = a.refreshExpiredToken(w, claims, tkn); err != nil {
 						a.JWTService.Reset(w)
 						onError(h, w, r, errors.Wrap(err, "can't refresh token"))
 						return
 					}
-					a.Logf("[DEBUG] token refreshed for %+v", claims.User)
 				}
 
 				r = token.SetUserInfo(r, *claims.User) // populate user info to request context
@@ -115,27 +124,28 @@ func (a *Authenticator) auth(reqAuth bool) func(http.Handler) http.Handler {
 }
 
 // refreshExpiredToken makes a new token with passed claims
-func (a *Authenticator) refreshExpiredToken(w http.ResponseWriter, claims token.Claims) (token.Claims, error) {
-	claims.ExpiresAt = 0 // this will cause now+duration for refreshed token
-	if err := a.JWTService.Set(w, claims); err != nil {
+func (a *Authenticator) refreshExpiredToken(w http.ResponseWriter, claims token.Claims, tkn string) (token.Claims, error) {
+
+	// cache refreshed claims for given token in order to eliminate multiple refreshes for concurrent requests
+	if a.RefreshCache != nil {
+		if c, ok := a.RefreshCache.Get(tkn); ok {
+			// already in cache
+			return c.(token.Claims), nil
+		}
+	}
+
+	claims.ExpiresAt = 0                  // this will cause now+duration for refreshed token
+	c, err := a.JWTService.Set(w, claims) // Set changes token
+	if err != nil {
 		return token.Claims{}, err
 	}
-	return claims, nil
-}
 
-// shouldRefresh checks if token expired with an optional random rejection of refresh.
-// the goal is to prevent multiple refresh request executed at the same time by allowing only some of them
-func (a *Authenticator) shouldRefresh(claims token.Claims) bool {
-	if !a.JWTService.IsExpired(claims) {
-		return false
+	if a.RefreshCache != nil {
+		a.RefreshCache.Set(tkn, c)
 	}
 
-	// disable randomizing with 0 factor
-	if a.RefreshFactor == 0 {
-		return true
-	}
-
-	return rand.Int31n(int32(a.RefreshFactor)) == 0 // randomize selection
+	a.Logf("[DEBUG] token refreshed for %+v", claims.User)
+	return c, nil
 }
 
 // AdminOnly middleware allows access for admins only
@@ -169,7 +179,8 @@ func (a *Authenticator) basicAdminUser(r *http.Request) bool {
 		return false
 	}
 
-	if user != "admin" || passwd != a.AdminPasswd {
+	// using ConstantTimeCompare to avoid timing attack
+	if user != "admin" || subtle.ConstantTimeCompare([]byte(passwd), []byte(a.AdminPasswd)) != 1 {
 		a.Logf("[WARN] admin basic auth failed, user/passwd mismatch, %s:%s", user, passwd)
 		return false
 	}

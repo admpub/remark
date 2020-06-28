@@ -3,14 +3,15 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"strings"
 	"time"
 
+	log "github.com/go-pkgz/lgr"
 	"github.com/pkg/errors"
-	"github.com/umputun/remark/backend/app/store"
+
+	"github.com/umputun/remark42/backend/app/store"
 )
 
 // CleanupCommand set of flags and command for cleanup
@@ -22,6 +23,7 @@ type CleanupCommand struct {
 	BadWords    []string `short:"w" long:"bword" description:"bad word(s)"`
 	BadUsers    []string `short:"u" long:"buser" description:"bad user(s)"`
 	AdminPasswd string   `long:"admin-passwd" env:"ADMIN_PASSWD" required:"true" description:"admin basic auth password"`
+	SetTitle    bool     `long:"title" description:"title mode, will not remove comments, but reset titles to page's title'"`
 	CommonOpts
 }
 
@@ -32,7 +34,7 @@ var (
 
 // Execute runs cleanup with CleanupCommand parameters, entry point for "cleanup" command
 // This command uses provided flags to detect and remove junk comments
-func (cc *CleanupCommand) Execute(args []string) error {
+func (cc *CleanupCommand) Execute(_ []string) error {
 	log.Printf("[INFO] cleanup for site %s", cc.Site)
 
 	posts, err := cc.postsInRange(cc.From, cc.To)
@@ -47,24 +49,51 @@ func (cc *CleanupCommand) Execute(args []string) error {
 		if e != nil {
 			continue
 		}
-		for _, comment := range comments {
-			totalComments++
-			spam, score := cc.isSpam(comment)
-			if spam {
-				spamComments++
-				if !cc.Dry {
-					if err = cc.deleteComment(comment); err != nil {
-						log.Printf("[WARN] can't remove comment, %v", err)
-					}
-				}
-				comment.Text = strings.Replace(comment.Text, "\n", " ", -1)
-				log.Printf("[SPAM] %+v [%.0f%%]", comment, score)
+		totalComments += len(comments)
 
+		if cc.SetTitle {
+			cc.procTitles(comments)
+		} else {
+			spamComments += cc.procSpam(comments)
+
+		}
+	}
+
+	msg := fmt.Sprintf("comments=%d, spam=%d", totalComments, spamComments)
+	if cc.SetTitle {
+		msg = fmt.Sprintf("comments=%d", totalComments)
+	}
+
+	log.Printf("[INFO] completed, %s", msg)
+	return err
+}
+
+func (cc *CleanupCommand) procSpam(comments []store.Comment) int {
+	spamComments := 0
+	for _, comment := range comments {
+		spam, score := cc.isSpam(comment)
+		if spam {
+			spamComments++
+			if !cc.Dry {
+				if err := cc.deleteComment(comment); err != nil {
+					log.Printf("[WARN] can't remove comment, %v", err)
+				}
+			}
+			comment.Text = strings.Replace(comment.Text, "\n", " ", -1)
+			log.Printf("[SPAM] %+v [%.0f%%]", comment, score)
+		}
+	}
+	return spamComments
+}
+
+func (cc *CleanupCommand) procTitles(comments []store.Comment) {
+	for _, comment := range comments {
+		if !cc.Dry {
+			if err := cc.setTitle(comment); err != nil {
+				log.Printf("[WARN] can't set title for comment, %v", err)
 			}
 		}
 	}
-	log.Printf("[INFO] comments=%d, spam=%d", totalComments, spamComments)
-	return err
 }
 
 // get list of posts in from/to represented as yyyymmdd. this is [from-to] inclusive
@@ -102,7 +131,8 @@ func (cc *CleanupCommand) postsInRange(fromS, toS string) ([]store.PostInfo, err
 // get all posts via GET /list?site=siteID&limit=50&skip=10
 func (cc *CleanupCommand) listPosts() ([]store.PostInfo, error) {
 	listURL := fmt.Sprintf("%s/api/v1/list?site=%s&limit=10000", cc.RemarkURL, cc.Site)
-	r, err := http.Get(listURL)
+	client := http.Client{Timeout: 30 * time.Second}
+	r, err := client.Get(listURL)
 	if err != nil {
 		return nil, errors.Wrapf(err, "get request failed for list of posts, site %s", cc.Site)
 	}
@@ -129,7 +159,8 @@ func (cc *CleanupCommand) listComments(postURL string) ([]store.Comment, error) 
 
 	// handle 429 error from limiter
 	for {
-		r, err = http.Get(commentsURL)
+		client := http.Client{Timeout: 30 * time.Second}
+		r, err = client.Get(commentsURL)
 		if err != nil {
 			return nil, errors.Wrapf(err, "get request failed for comments, %s", postURL)
 		}
@@ -152,7 +183,7 @@ func (cc *CleanupCommand) listComments(postURL string) ([]store.Comment, error) 
 		Info     store.PostInfo  `json:"info,omitempty"`
 	}{}
 
-	if err := json.NewDecoder(r.Body).Decode(&commentsWithInfo); err != nil {
+	if err = json.NewDecoder(r.Body).Decode(&commentsWithInfo); err != nil {
 		return nil, errors.Wrapf(err, "can't decode list of comments for %s", postURL)
 	}
 	return commentsWithInfo.Comments, nil
@@ -180,8 +211,30 @@ func (cc *CleanupCommand) deleteComment(c store.Comment) error {
 	return nil
 }
 
+// setTitle with PUT /admin/title/{id}?site=siteID&url=post-url
+func (cc *CleanupCommand) setTitle(c store.Comment) error {
+
+	titleURL := fmt.Sprintf("%s/api/v1/admin/title/%s?site=%s&url=%s&format=plain", cc.RemarkURL, c.ID, cc.Site, c.Locator.URL)
+	req, err := http.NewRequest("PUT", titleURL, nil)
+	if err != nil {
+		return errors.Wrapf(err, "failed to make title request for comment %s, %s", c.ID, c.Locator.URL)
+	}
+	req.SetBasicAuth("admin", cc.AdminPasswd)
+
+	client := http.Client{}
+	r, err := client.Do(req)
+	if err != nil {
+		return errors.Wrapf(err, "title request failed for comment %s, %s", c.ID, c.Locator.URL)
+	}
+	defer func() { _ = r.Body.Close() }()
+	if r.StatusCode != http.StatusOK {
+		return errors.Errorf("title request failed with status %s", r.Status)
+	}
+	return nil
+}
+
 // isSpam calculates spam's probability as a score
-func (cc *CleanupCommand) isSpam(comment store.Comment) (bool, float64) {
+func (cc *CleanupCommand) isSpam(comment store.Comment) (isSpam bool, spamScore float64) {
 
 	badWord := func(txt string) float64 {
 		res := 0.0

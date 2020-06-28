@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -10,10 +9,9 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/nullrocks/identicon"
-	"github.com/pkg/errors"
 	"golang.org/x/oauth2"
 
+	"github.com/go-pkgz/auth/avatar"
 	"github.com/go-pkgz/auth/logger"
 	"github.com/go-pkgz/auth/token"
 )
@@ -31,21 +29,16 @@ type DevAuthServer struct {
 	Automatic bool
 	username  string // unsafe, but fine for dev
 
-	iconGen    *identicon.Generator
 	httpServer *http.Server
 	lock       sync.Mutex
 }
 
 // Run oauth2 dev server on port devAuthPort
-func (d *DevAuthServer) Run(ctx context.Context) {
+func (d *DevAuthServer) Run(ctx context.Context) { //nolint (gocyclo)
 	d.username = "dev_user"
-	d.Logf("[INFO] run local oauth2 dev server on %d, redir url=%s", devAuthPort, d.Provider.redirectURL)
+	d.Logf("[INFO] run local oauth2 dev server on %d, redirect url=%s", devAuthPort, d.Provider.conf.RedirectURL)
 	d.lock.Lock()
 	var err error
-	d.iconGen, err = identicon.New("github", 5, 3)
-	if err != nil {
-		d.Logf("[WARN] can't create identicon, %s", err)
-	}
 
 	userFormTmpl, err := template.New("page").Parse(devUserFormTmpl)
 	if err != nil {
@@ -77,7 +70,7 @@ func (d *DevAuthServer) Run(ctx context.Context) {
 				}
 
 				state := r.URL.Query().Get("state")
-				callbackURL := fmt.Sprintf("%s?code=g0ZGZmNjVmOWI&state=%s", d.Provider.redirectURL, state)
+				callbackURL := fmt.Sprintf("%s?code=g0ZGZmNjVmOWI&state=%s", d.Provider.conf.RedirectURL, state)
 				d.Logf("[DEBUG] callback url=%s", callbackURL)
 				w.Header().Add("Location", callbackURL)
 				w.WriteHeader(http.StatusFound)
@@ -113,7 +106,7 @@ func (d *DevAuthServer) Run(ctx context.Context) {
 
 			case strings.HasPrefix(r.URL.Path, "/avatar"):
 				user := r.URL.Query().Get("user")
-				b, e := d.genAvatar(user)
+				b, e := avatar.GenerateAvatar(user)
 				if e != nil {
 					w.WriteHeader(http.StatusNotFound)
 					return
@@ -157,39 +150,26 @@ func (d *DevAuthServer) Shutdown() {
 
 // NewDev makes dev oauth2 provider for admin user
 func NewDev(p Params) Oauth2Handler {
-	return initOauth2Handler(p, Oauth2Handler{
+	oh := initOauth2Handler(p, Oauth2Handler{
 		name: "dev",
 		endpoint: oauth2.Endpoint{
 			AuthURL:  fmt.Sprintf("http://127.0.0.1:%d/login/oauth/authorize", devAuthPort),
 			TokenURL: fmt.Sprintf("http://127.0.0.1:%d/login/oauth/access_token", devAuthPort),
 		},
-		redirectURL: p.URL + "/auth/dev/callback",
-		scopes:      []string{"user:email"},
-		infoURL:     fmt.Sprintf("http://127.0.0.1:%d/user", devAuthPort),
-		mapUser: func(data userData, _ []byte) token.User {
+		scopes:  []string{"user:email"},
+		infoURL: fmt.Sprintf("http://127.0.0.1:%d/user", devAuthPort),
+		mapUser: func(data UserData, _ []byte) token.User {
 			userInfo := token.User{
-				ID:      data.value("id"),
-				Name:    data.value("name"),
-				Picture: data.value("picture"),
+				ID:      data.Value("id"),
+				Name:    data.Value("name"),
+				Picture: data.Value("picture"),
 			}
 			return userInfo
 		},
 	})
-}
 
-func (d *DevAuthServer) genAvatar(user string) ([]byte, error) {
-	if d.iconGen == nil {
-		return nil, errors.Errorf("no iconGen, skip avatar generation for %s", user)
-	}
-
-	ii, err := d.iconGen.Draw(user) // Generate an IdentIcon
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to draw avatar for %s", user)
-	}
-
-	buf := &bytes.Buffer{}
-	err = ii.Png(300, buf)
-	return buf.Bytes(), err
+	oh.conf.RedirectURL = p.URL + "/auth/dev/callback"
+	return oh
 }
 
 var devUserFormTmpl = `

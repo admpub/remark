@@ -4,12 +4,12 @@ import (
 	"encoding/xml"
 	"html"
 	"io"
-	"log"
 	"time"
 
+	log "github.com/go-pkgz/lgr"
 	"github.com/pkg/errors"
 
-	"github.com/umputun/remark/backend/app/store"
+	"github.com/umputun/remark42/backend/app/store"
 )
 
 const wpTimeLayout = "2006-01-02 15:04:05"
@@ -39,6 +39,7 @@ type wpTime struct {
 	time time.Time
 }
 
+// UnmarshalXML decoding xml with time in WP format
 func (w *wpTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var v string
 	if err := d.DecodeElement(&v, &start); err != nil {
@@ -60,8 +61,8 @@ func (w *WordPress) Convert(text string) string {
 // Import comments from WP and save to store
 func (w *WordPress) Import(r io.Reader, siteID string) (size int, err error) {
 
-	if err = w.DataStore.DeleteAll(siteID); err != nil {
-		return 0, err
+	if e := w.DataStore.DeleteAll(siteID); e != nil {
+		return 0, e
 	}
 
 	commentsCh := w.convert(r, siteID)
@@ -111,7 +112,7 @@ func (w *WordPress) convert(r io.Reader, siteID string) chan store.Comment {
 				if el.Name.Local == "item" {
 					stats.inpItems++
 					item := wpItem{}
-					if err := decoder.DecodeElement(&item, &el); err != nil {
+					if err = decoder.DecodeElement(&item, &el); err != nil {
 						log.Printf("[WARN] Can't decode item, %s", err)
 						stats.failedItems++
 						continue
@@ -142,7 +143,7 @@ func (w *WordPress) convert(r io.Reader, siteID string) chan store.Comment {
 							commentsCh <- commentFormatter.Format(c)
 							stats.inpComments++
 							if stats.inpComments%1000 == 0 {
-								log.Printf("[DEBUG] proccessed %d comments", stats.inpComments)
+								log.Printf("[DEBUG] processed %d comments", stats.inpComments)
 							}
 						}
 					}
